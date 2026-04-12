@@ -37,12 +37,14 @@ app = typer.Typer(
 
 mcp_app = typer.Typer(name="mcp", help="Manage MCP servers")
 plugin_app = typer.Typer(name="plugin", help="Manage plugins")
+skill_app = typer.Typer(name="skill", help="Manage skills")
 auth_app = typer.Typer(name="auth", help="Manage authentication")
 provider_app = typer.Typer(name="provider", help="Manage provider profiles")
 cron_app = typer.Typer(name="cron", help="Manage cron scheduler and jobs")
 
 app.add_typer(mcp_app)
 app.add_typer(plugin_app)
+app.add_typer(skill_app)
 app.add_typer(auth_app)
 app.add_typer(provider_app)
 app.add_typer(cron_app)
@@ -143,6 +145,167 @@ def plugin_uninstall(
 
     uninstall_plugin(name)
     print(f"Uninstalled plugin: {name}")
+
+
+# ---- skill subcommands ----
+
+@skill_app.command("list")
+def skill_list() -> None:
+    """List installed skills (bundled + user)."""
+    from openharness.skills.installer import list_installed_skills
+    from openharness.skills.bundled import get_bundled_skills
+
+    bundled = get_bundled_skills()
+    user = list_installed_skills()
+
+    print("\n[bundled]")
+    if bundled:
+        for s in bundled:
+            print(f"  {s.name:20s} {s.description[:60]}")
+    else:
+        print("  (none)")
+
+    print("\n[user]")
+    if user:
+        for s in user:
+            print(f"  {s['name']:20s} {s['path']}")
+    else:
+        print("  (none – run `oh skill install --popular` to get started)")
+    print()
+
+
+@skill_app.command("search")
+def skill_search(
+    query: str = typer.Argument(..., help="Search query, e.g. 'code review python'"),
+    max_results: int = typer.Option(10, "--max", "-n", help="Maximum results"),
+    token: Optional[str] = typer.Option(None, "--token", "-t", envvar="GITHUB_TOKEN", help="GitHub token for higher rate limits"),
+) -> None:
+    """Search GitHub for SKILL.md files matching a query."""
+    from openharness.skills.github_search import search_skills_on_github
+
+    print(f"\nSearching GitHub for skills: {query!r} …\n")
+    try:
+        results = search_skills_on_github(query, token=token, max_results=max_results)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise typer.Exit(1)
+
+    if not results:
+        print("No results found.")
+        return
+
+    for i, r in enumerate(results, 1):
+        stars = f"★{r.stars}" if r.stars else ""
+        topics = " ".join(f"#{t}" for t in r.topics[:3])
+        print(f"  {i:2d}. {r.repo:<35s} {stars:6s} {topics}")
+        print(f"      {r.description[:70]}" if r.description else "")
+        print(f"      install: oh skill install {r.raw_url}")
+        print()
+
+
+@skill_app.command("install")
+def skill_install(
+    source: Optional[str] = typer.Argument(
+        None,
+        help="URL or 'owner/repo[/path]' to install from. Omit to use --popular.",
+    ),
+    popular: bool = typer.Option(False, "--popular", "-p", help="Install all popular skills"),
+    slug: Optional[str] = typer.Option(None, "--name", "-n", help="Override local skill name"),
+    token: Optional[str] = typer.Option(None, "--token", "-t", envvar="GITHUB_TOKEN", help="GitHub token"),
+    ref: str = typer.Option("main", "--ref", help="Branch or tag (for GitHub repo paths)"),
+) -> None:
+    """Install a skill from a URL, GitHub path, or the popular presets.
+
+    Examples:
+
+      oh skill install --popular
+
+      oh skill install https://raw.githubusercontent.com/owner/repo/main/skills/review/SKILL.md
+
+      oh skill install owner/repo/skills/review/SKILL.md
+    """
+    from openharness.skills.installer import (
+        install_popular_skills,
+        install_skill_from_url,
+        install_skill_from_github,
+    )
+
+    if popular:
+        print("Installing popular skills …\n")
+        results = install_popular_skills(
+            progress_cb=lambda slug, ok, msg: print(f"  {msg}")  # type: ignore[arg-type]
+        )
+        ok_count = sum(1 for _, ok, _ in results if ok)
+        fail_count = len(results) - ok_count
+        print(f"\nDone: {ok_count} installed, {fail_count} failed.")
+        return
+
+    if source is None:
+        print("Provide a source URL / GitHub path, or use --popular.", file=sys.stderr)
+        raise typer.Exit(1)
+
+    # Detect whether source is a URL or an owner/repo path
+    if source.startswith("http://") or source.startswith("https://"):
+        try:
+            dest = install_skill_from_url(source, slug=slug)
+            print(f"Installed skill → {dest}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise typer.Exit(1)
+    else:
+        # Parse owner/repo[/path/to/SKILL.md]
+        parts = source.strip("/").split("/")
+        if len(parts) < 2:
+            print(
+                "GitHub path must be 'owner/repo' or 'owner/repo/path/SKILL.md'",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
+        owner, repo = parts[0], parts[1]
+        path = "/".join(parts[2:]) if len(parts) > 2 else "SKILL.md"
+        try:
+            dest = install_skill_from_github(owner, repo, path, ref=ref, slug=slug)
+            print(f"Installed skill → {dest}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise typer.Exit(1)
+
+
+@skill_app.command("uninstall")
+def skill_uninstall(
+    name: str = typer.Argument(..., help="Skill name (directory name) to remove"),
+) -> None:
+    """Uninstall a user skill."""
+    from openharness.skills.installer import uninstall_skill
+
+    if uninstall_skill(name):
+        print(f"Uninstalled skill: {name}")
+    else:
+        print(f"Skill not found: {name}", file=sys.stderr)
+        raise typer.Exit(1)
+
+
+@skill_app.command("info")
+def skill_info(
+    name: str = typer.Argument(..., help="Skill name to inspect"),
+) -> None:
+    """Show details for an installed skill."""
+    from openharness.skills import load_skill_registry
+
+    registry = load_skill_registry(Path.cwd())
+    skill = registry.get(name) or registry.get(name.lower()) or registry.get(name.title())
+    if skill is None:
+        print(f"Skill not found: {name}", file=sys.stderr)
+        raise typer.Exit(1)
+    print(f"\nName:   {skill.name}")
+    print(f"Source: {skill.source}")
+    print(f"Path:   {skill.path or '(built-in)'}")
+    print(f"Desc:   {skill.description}")
+    print("\n--- content ---\n")
+    print(skill.content[:800])
+    if len(skill.content) > 800:
+        print("… (truncated)")
+    print()
 
 
 # ---- cron subcommands ----

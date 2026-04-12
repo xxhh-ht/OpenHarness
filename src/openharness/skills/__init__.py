@@ -8,7 +8,24 @@ if TYPE_CHECKING:  # pragma: no cover
     from openharness.skills.registry import SkillRegistry
     from openharness.skills.types import SkillDefinition
 
-__all__ = ["SkillDefinition", "SkillRegistry", "get_user_skills_dir", "load_skill_registry"]
+__all__ = [
+    "SkillDefinition",
+    "SkillRegistry",
+    "get_user_skills_dir",
+    "load_skill_registry",
+    # installer
+    "install_skill_from_url",
+    "install_skill_from_github",
+    "install_popular_skills",
+    "uninstall_skill",
+    "list_installed_skills",
+    "POPULAR_SKILLS",
+    # github search
+    "search_skills_on_github",
+    "search_skill_repos_on_github",
+    "fetch_skill_preview",
+    "SkillSearchResult",
+]
 
 
 def __getattr__(name: str):
@@ -27,4 +44,28 @@ def __getattr__(name: str):
         from openharness.skills.types import SkillDefinition
 
         return SkillDefinition
+    # installer
+    if name in {
+        "install_skill_from_url",
+        "install_skill_from_github",
+        "install_popular_skills",
+        "uninstall_skill",
+        "list_installed_skills",
+        "POPULAR_SKILLS",
+    }:
+        import importlib
+
+        mod = importlib.import_module("openharness.skills.installer")
+        return getattr(mod, name)
+    # github search
+    if name in {
+        "search_skills_on_github",
+        "search_skill_repos_on_github",
+        "fetch_skill_preview",
+        "SkillSearchResult",
+    }:
+        import importlib
+
+        mod = importlib.import_module("openharness.skills.github_search")
+        return getattr(mod, name)
     raise AttributeError(name)
